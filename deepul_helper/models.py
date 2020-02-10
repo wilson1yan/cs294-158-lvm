@@ -71,6 +71,7 @@ class FullyConnectedVAE(nn.Module):
 
     def loss(self, x):
         z, enc_params, dec_params = self(x)
+
         self.enc_dist.set_params(enc_params)
         self.dec_dist.set_params(dec_params)
 
@@ -81,7 +82,7 @@ class FullyConnectedVAE(nn.Module):
         return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
                            kl_loss=kl_loss)
 
-    def sample(self, n):
+    def sample(self, n, decoder_noise=True):
         with torch.no_grad():
             z = torch.cat([self.prior.sample() for _ in range(n)], dim=0)
-            return self.decode(z).cpu()
+            return self.decode(z, sample=decoder_noise).cpu()

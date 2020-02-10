@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def kl(z, dist1, dist2):
@@ -38,7 +39,6 @@ class Distribution(object):
 
 
 class Normal(Distribution):
-
     def log_prob(self, x, params=None):
         params = self.get_params(params)
         mu, log_stddev = params.chunk(2, dim=1)
@@ -57,9 +57,24 @@ class Normal(Distribution):
         eps = torch.randn_like(mu)
         return mu + eps * log_stddev.exp()
 
+class Bernoulli(Distribution):
+    def log_prob(self, x, params=None):
+        params = self.get_params(params)
+        return -F.binary_cross_entropy_with_logits(params, x)
+
+    def expectation(self, params=None):
+        return torch.sigmoid(self.get_params(params))
+
+    def sample(self, params=None):
+        params = self.get_params(params)
+        return torch.bernoulli(torch.sigmoid(params))
+
+
 def get_dist_output_size(dist, var_shape):
     flattened_size = np.prod(var_shape)
     if isinstance(dist, Normal):
         return 2 * flattened_size
+    elif isinstance(dist, Bernoulli):
+        return flattened_size
     else:
         raise Exception('Invalid dist')

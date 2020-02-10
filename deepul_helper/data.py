@@ -13,3 +13,14 @@ def sample_smiley_data(n):
     data_y = np.array([0] * len(a) + [1] * len(b) + [2] * len(c))
     perm = rand.permutation(len(data_x))
     return data_x[perm].astype('float32'), data_y[perm]
+
+
+def sample_diag_guass_data(count):
+    rand = np.random.RandomState(0)
+    return ([[1.0, 2.0]] + rand.randn(count, 2) * [[5.0, 1.0]]).astype('float32')
+
+
+def sample_cov_gauss_data(count):
+    rand = np.random.RandomState(0)
+    return ([[1.0, 2.0]] + (rand.randn(count, 2) * [[5.0, 1.0]]).dot(
+        [[np.sqrt(2) / 2, np.sqrt(2) / 2], [-np.sqrt(2) / 2, np.sqrt(2) / 2]])).astype('float32')
