@@ -2,7 +2,7 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import torch.nn as nn
-from deepul_helper.distributions import normal_kl, normal_log_prob
+from deepul_helper.distributions import kl, get_dist_output_size
 
 
 class MLP(nn.Module):
@@ -26,9 +26,9 @@ class MLP(nn.Module):
         return self.net(x)
 
 
-class MixtureVAE(nn.Module):
-    def __init__(self, device, input_shape, latent_size,
-                 enc_hidden_sizes=[], dec_hidden_sizes=[], beta=1):
+class FullyConnectedVAE(nn.Module):
+    def __init__(self, device, input_shape, latent_size, enc_dist,
+                 dec_dist, prior, enc_hidden_sizes=[], dec_hidden_sizes=[], beta=1):
         super().__init__()
         if isinstance(input_shape, int):
             input_shape = (input_shape,)
@@ -38,46 +38,44 @@ class MixtureVAE(nn.Module):
         self.device = device
         self.beta = beta
 
-        self.encoder = MLP(input_shape, 2 * latent_size, enc_hidden_sizes)
-        self.decoder = MLP(latent_size, 2 * np.prod(input_shape), dec_hidden_sizes)
+        self.dec_dist = dec_dist
+        self.enc_dist = enc_dist
+        self.prior = prior
+
+        self.encoder = MLP(input_shape, get_dist_output_size(enc_dist, latent_size),
+                           enc_hidden_sizes)
+        self.decoder = MLP(latent_size, get_dist_output_size(dec_dist, input_shape),
+                           dec_hidden_sizes)
 
     def encode(self, x, sample=True):
-        mu, log_stddev = self.encoder(x).chunk(2, dim=1)
+        out = self.encoder(x)
         if sample:
-            return torch.randn_like(mu) * log_stddev.exp() + mu
-        return mu
+            z = self.enc_dist.sample(out)
+        else:
+            z = self.enc_dist.expectation(out)
+        return z
 
     def decode(self, z, sample=True):
         out = self.decoder(z)
-        mu, log_stddev = out.chunk(2, dim=1)
-
         if sample:
-            eps = torch.randn_like(mu)
-            x = mu + eps * log_stddev.exp()
+            x = self.dec_dist.sample(out)
         else:
-            x = mu
+            x = self.dec_dist.expectation(out)
         return x.view(-1, *self.input_shape)
 
     def forward(self, x):
-        out = self.encoder(x)
-        z_mu, z_log_stddev = out.chunk(2, dim=1)
-        z_log_stddev = torch.tanh(z_log_stddev)
-        eps = torch.randn_like(z_mu)
-        z = z_mu + eps * z_log_stddev.exp()
-
-        out = self.decoder(z)
-        x_recon_mu, x_recon_log_stddev = out.chunk(2, dim=1)
-        x_recon_log_stddev = torch.tanh(x_recon_log_stddev)
-        x_recon_mu = x_recon_mu.view(-1, *self.input_shape)
-        x_recon_log_stddev = x_recon_log_stddev.view(-1, *self.input_shape)
-
-        return z_mu, z_log_stddev, x_recon_mu, x_recon_log_stddev
+        enc_params = self.encoder(x)
+        z = self.enc_dist.sample(enc_params)
+        dec_params = self.decoder(z)
+        return z, enc_params, dec_params
 
     def loss(self, x):
-        z_mu, z_log_stddev, x_recon_mu, x_recon_log_stddev = self(x)
+        z, enc_params, dec_params = self(x)
+        self.enc_dist.set_params(enc_params)
+        self.dec_dist.set_params(dec_params)
 
-        recon_loss = -normal_log_prob(x, x_recon_mu, x_recon_log_stddev)
-        kl_loss = normal_kl(z_mu, z_log_stddev, torch.zeros_like(z_mu), torch.ones_like(z_log_stddev))
+        recon_loss = -self.dec_dist.log_prob(x)
+        kl_loss = kl(z, self.enc_dist, self.prior)
         recon_loss, kl_loss = recon_loss.mean(), kl_loss.mean()
 
         return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
@@ -85,5 +83,5 @@ class MixtureVAE(nn.Module):
 
     def sample(self, n):
         with torch.no_grad():
-            z = torch.randn(n, self.latent_size).to(self.device)
+            z = torch.cat([self.prior.sample() for _ in range(n)], dim=0)
             return self.decode(z).cpu()
