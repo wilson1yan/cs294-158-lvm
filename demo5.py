@@ -13,14 +13,14 @@ def train_bern_vae(train_data):
     device = torch.device('cpu')
     enc_dist, dec_dist = Normal(), Bernoulli()
     prior = Normal(torch.FloatTensor([[0, 1]]))
-    vae = FullyConnectedVAE(device, 1, 1, enc_dist, dec_dist, prior,
+    vae = FullyConnectedVAE(device, train_data.shape[1], 1, enc_dist, dec_dist, prior,
                             enc_hidden_sizes=[32], dec_hidden_sizes=[32],
                             beta=1)
     data_loader = data.DataLoader(train_data, batch_size=1, shuffle=True)
     train_epochs(vae, data_loader, None, device, dict(epochs=1000, lr=2e-4))
 
-# train_bern_vae(np.array([[0.], [1.]]))
-# train_bern_vae(np.array([[0., 0., 0., 0., 0.], [1., 1., 1., 1., 1.]]))
+train_bern_vae(np.array([[0.], [1.]], dtype='float32'))
+train_bern_vae(np.array([[0., 0., 0., 0., 0.], [1., 1., 1., 1., 1.]], dtype='float32'))
 
 # Posterior Collapse on Gaussian data
 
