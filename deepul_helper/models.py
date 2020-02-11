@@ -528,7 +528,153 @@ class SentenceVAE(nn.Module):
 
 # IWAE
 
-# VQ-VAE
 
+# PixelCNN
+class MaskConv2d(nn.Conv2d):
+    def __init__(self, mask_type, *args, **kwargs):
+        assert mask_type == 'A' or mask_type == 'B'
+        super().__init__(*args, **kwargs)
+        self.register_buffer('mask', torch.zeros_like(self.weight))
+        self.create_mask(mask_type)
+
+    def forward(self, input, cond=None):
+        out = F.conv2d(input, self.weight * self.mask, self.bias, self.stride,
+                       self.padding, self.dilation, self.groups)
+        return out
+
+    def create_mask(self, mask_type):
+        k = self.kernel_size[0]
+        self.mask[:, :, :k // 2] = 1
+        self.mask[:, :, k // 2, :k // 2] = 1
+        if mask_type == 'B':
+            self.mask[:, :, k // 2, k // 2] = 1
+
+
+class PixelCNN(nn.Module):
+    def __init__(self, device, d, input_shape=(1, 7, 7), kernel_size=5, n_layers=7):
+        super().__init__()
+        assert n_layers >= 2
+
+        model = nn.ModuleList([MaskConv2d('A', input_shape[0], 64, kernel_size,
+                                          padding=kernel_size // 2), nn.ReLU()])
+        for _ in range(n_layers - 2):
+            model.extend([MaskConv2d('B', 64, 64, kernel_size,
+                                     padding=kernel_size // 2), nn.ReLU()])
+        model.append(MaskConv2d('B', 64, input_shape[0] * d, kernel_size, padding=kernel_size // 2))
+        self.net = model
+        self.d = d
+        self.device = device
+        self.input_shape = input_shape
+
+    def forward(self, x):
+        out = 2 * (x.float() / (self.d - 1)) - 1
+        for layer in self.net:
+            out = layer(out)
+        return out.view(x.shape[0], self.d, *self.input_shape)
+
+    def loss(self, x):
+        return OrderedDict(loss=F.cross_entropy(self(x), x.long()))
+
+    def sample(self, n):
+        samples = torch.zeros(n, *self.input_shape).to(self.device)
+        with torch.no_grad():
+            for r in range(self.input_shape[1]):
+                for c in range(self.input_shape[2]):
+                    for k in range(self.input_shape[0]):
+                        logits = self(samples)[:, :, k, r, c]
+                        logits = F.softmax(logits, dim=1)
+                        samples[:, k, r, c] = torch.multinomial(logits, 1).squeeze(-1)
+        return samples
+
+
+# VQ-VAE
+class Quantize(nn.Module):
+
+    def __init__(self, size, code_dim, gamma=0.99):
+        super().__init__()
+        self.embedding = nn.Embedding(size, code_dim)
+        self.embedding.weight.requires_grad = False
+
+        self.code_dim = code_dim
+        self.size = size
+        self.gamma = gamma
+
+        self.register_buffer('N', torch.zeros(size))
+        self.register_buffer('z_avg', self.embedding.weight.data.clone())
+
+    def forward(self, z):
+        b, c, h, w = z.shape
+        weight = self.embedding.weight
+
+        flat_inputs = z.permute(0, 2, 3, 1).contiguous().view(-1, self.code_dim)
+        distances = (flat_inputs ** 2).sum(dim=1, keepdim=True) \
+                    - 2 * torch.mm(flat_inputs, weight.t()) \
+                    + (weight.t() ** 2).sum(dim=0, keepdim=True)
+        encoding_indices = torch.max(-distances, dim=1)[1]
+        encode_onehot = F.one_hot(encoding_indices, self.size).type(flat_inputs.dtype)
+        encoding_indices = encoding_indices.view(b, h, w)
+        quantized = self.embedding(encoding_indices).permute(0, 3, 1, 2)
+
+        if self.training:
+            self.N.data.mul_(self.gamma).add_(1 - self.gamma, encode_onehot.sum(0))
+
+            encode_sum = torch.mm(flat_inputs.t(), encode_onehot)
+            self.z_avg.data.mul_(self.gamma).add_(1 - self.gamma, encode_sum.t())
+
+            n = self.N.sum()
+            weights = (self.N + 1e-7) / (n + self.size * 1e-7) * n
+            encode_normalized = self.z_avg / weights.unsqueeze(1)
+            self.embedding.weight.data.copy_(encode_normalized)
+
+        return quantized, (quantized - z).detach() + z, encoding_indices
+
+class VectorQuantizedVAE(nn.Module):
+    def __init__(self, code_dim, code_size, beta):
+        super().__init__()
+        self.beta = beta
+        self.code_size = code_size
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 64, 5, stride=2, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 5, stride=1, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64, code_dim, 5, stride=2, padding=2)
+        )
+
+        self.codebook = Quantize(code_size, code_dim)
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(code_dim, 64, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 64, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 1, 3, padding=1),
+            nn.Tanh(),
+        )
+
+    def encode_code(self, x):
+        z = self.encoder(x)
+        indices = self.codebook(z)[2]
+        return indices
+
+    def decode_code(self, latents):
+        latents = self.codebook.embedding(latents).permute(0, 3, 1, 2)
+        return self.decoder(latents)
+
+    def forward(self, x):
+        z = self.encoder(x)
+        e, e_st, _ = self.codebook(z)
+        x_tilde = self.decoder(e_st)
+
+        diff = (z - e.detach()).pow(2).mean()
+        return x_tilde, diff
+
+    def loss(self, x):
+        x_tilde, diff = self(x)
+        recon_loss = F.mse_loss(x_tilde, x)
+        diff_loss = diff
+        loss = recon_loss + self.beta * diff_loss
+        return OrderedDict(loss=loss, recon_loss=recon_loss, diff_loss=diff_loss)
 
 # Gumbel-Softmax VAE

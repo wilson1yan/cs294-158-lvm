@@ -33,7 +33,7 @@ samples = mnist_vae.sample(100, decoder_noise=False)
 visualize_batch(samples * 0.5 + 0.5, nrow=10, title='Samples')
 
 with torch.no_grad():
-    x = next(iter(train_loader))[0][:50].to(device)
+    x = next(iter(test_loader))[0][:50].to(device)
     z = mnist_vae.encode(x)
     x_recon = mnist_vae.decode(z, sample=False)
     images = torch.stack((x, x_recon), dim=1).view(-1, 1, 28, 28).cpu()
