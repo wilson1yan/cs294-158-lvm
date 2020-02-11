@@ -69,7 +69,7 @@ class Normal(Distribution):
 class Bernoulli(Distribution):
     def log_prob(self, x, params=None):
         params = self.get_params(params)
-        return -F.binary_cross_entropy_with_logits(params, x)
+        return -F.binary_cross_entropy_with_logits(params, x, reduction='none').view(x.shape[0], -1).sum(-1)
 
     def expectation(self, params=None):
         return torch.sigmoid(self.get_params(params))
@@ -83,14 +83,14 @@ def get_dist_output_size(dist, var_shape, flattened=False):
     if flattened or isinstance(var_shape, int) or len(var_shape) == 1:
         flattened_size = np.prod(var_shape)
         if isinstance(dist, Normal):
-            return 2 * flattened_size
+            return (2 * flattened_size,)
         elif isinstance(dist, Bernoulli):
-            return flattened_size
+            return (flattened_size,)
         else:
             raise Exception('Invalid dist')
     else:
         assert len(var_shape) == 3
         if isinstance(dist, Normal):
-            return 2 * var_shape[0]
+            return (var_shape[0] * 2,) + var_shape[1:]
         elif isinstance(dist, Bernoulli):
-            return var_shape[0]
+            return var_shape

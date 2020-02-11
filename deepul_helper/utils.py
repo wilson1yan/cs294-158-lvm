@@ -1,4 +1,5 @@
 import requests
+from collections import OrderedDict, Counter
 import torch
 
 
@@ -47,6 +48,12 @@ def to_grayscale(img):
         raise Exception('Invalid img shape', img.shape)
 
 
+def download_file(url, filename):
+    r = requests.get(url)
+    with open(filename, 'wb') as f:
+        f.write(r.content)
+
+
 # Code to download from Google Drive
 def download_file_from_google_drive(id, destination):
     URL = "https://docs.google.com/uc?export=download"
@@ -76,4 +83,13 @@ def save_response_content(response, destination):
         for chunk in response.iter_content(CHUNK_SIZE):
             if chunk: # filter out keep-alive new chunks
                 f.write(chunk)
+
+class OrderedCounter(Counter, OrderedDict):
+    'Counter that remembers the order elements are first encountered'
+
+    def __repr__(self):
+        return '%s(%r)' % (self.__class__.__name__, OrderedDict(self))
+
+    def __reduce__(self):
+        return self.__class__, (OrderedDict(self),)
 
