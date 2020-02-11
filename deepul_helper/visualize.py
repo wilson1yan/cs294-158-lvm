@@ -47,7 +47,7 @@ def plot_scatter_2d(points, title='', labels=None):
     plt.figure()
     if labels is not None:
         plt.scatter(points[:, 0], points[:, 1], c=labels,
-                    cmap=mpl.colors.ListedColormap(['red', 'blue', 'green']))
+                    cmap=mpl.colors.ListedColormap(['red', 'blue', 'green', 'purple']))
     else:
         plt.scatter(points[:, 0], points[:, 1])
     plt.title(title)
@@ -55,6 +55,7 @@ def plot_scatter_2d(points, title='', labels=None):
 
 
 def visualize_batch(batch_tensor, nrow=8, title='', figsize=None):
+    batch_tensor = batch_tensor.clamp(min=0, max=1)
     grid_img = make_grid(batch_tensor, nrow=nrow)
     plt.figure(figsize=figsize)
     plt.title(title)

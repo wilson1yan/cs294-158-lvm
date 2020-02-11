@@ -39,9 +39,18 @@ class Distribution(object):
 
 
 class Normal(Distribution):
+    def __init__(self, params=None, use_mean=False):
+        super().__init__(params=params)
+        self.use_mean = use_mean
+
     def log_prob(self, x, params=None):
         params = self.get_params(params)
         mu, log_stddev = params.chunk(2, dim=1)
+        log_stddev = torch.tanh(log_stddev)
+
+        if self.use_mean:
+            return -F.mse_loss(mu, x, reduction='none').view(x.shape[0], -1).sum(-1)
+
         log_prob = 0.5 * np.log(2 * np.pi)
         log_prob = log_prob + log_stddev + (x - mu) ** 2 * torch.exp(-2 * log_stddev) * 0.5
         log_prob = log_prob.view(log_prob.shape[0], -1).sum(-1)
@@ -70,11 +79,18 @@ class Bernoulli(Distribution):
         return torch.bernoulli(torch.sigmoid(params))
 
 
-def get_dist_output_size(dist, var_shape):
-    flattened_size = np.prod(var_shape)
-    if isinstance(dist, Normal):
-        return 2 * flattened_size
-    elif isinstance(dist, Bernoulli):
-        return flattened_size
+def get_dist_output_size(dist, var_shape, flattened=False):
+    if flattened or isinstance(var_shape, int) or len(var_shape) == 1:
+        flattened_size = np.prod(var_shape)
+        if isinstance(dist, Normal):
+            return 2 * flattened_size
+        elif isinstance(dist, Bernoulli):
+            return flattened_size
+        else:
+            raise Exception('Invalid dist')
     else:
-        raise Exception('Invalid dist')
+        assert len(var_shape) == 3
+        if isinstance(dist, Normal):
+            return 2 * var_shape[0]
+        elif isinstance(dist, Bernoulli):
+            return var_shape[0]

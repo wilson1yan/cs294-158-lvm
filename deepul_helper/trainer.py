@@ -11,6 +11,8 @@ def train(model, train_loader, optimizer, epoch, device, grad_clip=None):
     pbar = tqdm(total=len(train_loader.dataset))
     losses = OrderedDict()
     for x in train_loader:
+        if isinstance(x, list):
+            x = x[0]
         x = x.to(device)
         out = model.loss(x)
         optimizer.zero_grad()
@@ -37,6 +39,8 @@ def eval_loss(model, data_loader, device):
     total_losses = OrderedDict()
     with torch.no_grad():
         for x in data_loader:
+            if isinstance(x, list):
+                x = x[0]
             x = x.to(device)
             out = model.loss(x)
             for k, v in out.items():
