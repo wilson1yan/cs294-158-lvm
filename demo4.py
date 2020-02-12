@@ -13,7 +13,7 @@ device = torch.device('cuda')
 
 enc_dist, dec_dist = Normal(), Normal()
 prior = Normal(torch.cat((torch.zeros(1, 2), torch.ones(1, 2)), dim=1).to(device))
-vae = FullyConnectedVAE(device, 2, 2, enc_dist, dec_dist, prior,
+vae = FullyConnectedVAE(2, 2, enc_dist, dec_dist, prior,
                         enc_hidden_sizes=[128, 128], dec_hidden_sizes=[128, 128],
                         beta=1).to(device)
 

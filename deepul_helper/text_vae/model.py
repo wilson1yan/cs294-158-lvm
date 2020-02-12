@@ -159,7 +159,7 @@ class SentenceVAE(nn.Module):
             generations = self._save_sample(generations, input_sequence, sequence_running, t)
 
             # update gloabl running sequence
-            sequence_mask[sequence_running] = (input_sequence != self.eos_idx).data
+            sequence_mask[sequence_running] = (input_sequence != self.eos_idx).data.byte()
             sequence_running = sequence_idx.masked_select(sequence_mask)
 
             # update local running sequences
