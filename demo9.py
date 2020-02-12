@@ -40,14 +40,14 @@ latent_size = 8
 enc_dist = Normal()
 prior = Normal(torch.cat((torch.zeros(1, latent_size), torch.ones(1, latent_size)), dim=1).to(device))
 
-# pixel_vae = PixelVAE(device, (1, 28, 28), latent_size, enc_dist, prior,
-#                      enc_conv_sizes=((3, 64, 2), (3, 64, 2))).to(device)
-# run_demo9(pixel_vae)
-#
-#
-# af_vae = AFPixelVAE(device, (1, 28, 28), latent_size, enc_dist,
-#                        enc_conv_sizes=((3, 64, 2), (3, 64, 2)), made_hidden_sizes=[512, 512]).to(device)
-# run_demo9(af_vae)
+pixel_vae = PixelVAE(device, (1, 28, 28), latent_size, enc_dist, prior,
+                     enc_conv_sizes=((3, 64, 2), (3, 64, 2))).to(device)
+run_demo9(pixel_vae)
+
+
+af_vae = AFPixelVAE(device, (1, 28, 28), latent_size, enc_dist,
+                       enc_conv_sizes=((3, 64, 2), (3, 64, 2)), made_hidden_sizes=[512, 512]).to(device)
+run_demo9(af_vae)
 
 iaf_vae = IAFPixelVAE(device, (1, 28, 28), latent_size, prior,
                       enc_conv_sizes=((3, 64, 2), (3, 64, 2)), made_hidden_sizes=[512, 512],
