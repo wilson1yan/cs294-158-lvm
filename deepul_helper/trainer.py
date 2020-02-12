@@ -53,7 +53,7 @@ def eval_loss(model, data_loader, device):
         print(desc)
 
 
-def train_epochs(model, train_loader, test_loader, device, train_args):
+def train_epochs(model, train_loader, test_loader, device, train_args, fn=None, fn_every=1):
     epochs, lr = train_args['epochs'], train_args['lr']
     grad_clip = train_args.get('grad_clip', None)
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -63,4 +63,7 @@ def train_epochs(model, train_loader, test_loader, device, train_args):
         train(model, train_loader, optimizer, epoch, device, grad_clip)
         if test_loader is not None:
             eval_loss(model, test_loader, device)
+
+        if fn is not None and epoch % fn_every == 0:
+            fn(epoch)
 

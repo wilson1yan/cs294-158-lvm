@@ -10,6 +10,12 @@ from deepul_helper.distributions import kl, get_dist_output_size
 class MLP(nn.Module):
     def __init__(self, input_shape, output_shape, hiddens=[]):
         super().__init__()
+
+        if isinstance(input_shape, int):
+            input_shape = (input_shape,)
+        if isinstance(output_shape, int):
+            output_shape = (output_shape,)
+
         self.input_shape = input_shape
         self.output_shape = output_shape
         self.hiddens = hiddens

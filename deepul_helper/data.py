@@ -1,4 +1,12 @@
 import numpy as np
+from sklearn.datasets import make_blobs
+
+def sample_four_blobs(n):
+    centers = np.array([[5, 5], [5, -5], [-5, -5], [-5, 5]])
+    st_devs = [1.0, 1.0, 1.0, 1.0]
+    x, _ = make_blobs(n, n_features=2, centers=centers, cluster_std=st_devs,
+                      shuffle=True)
+    return x.astype('float32')
 
 def sample_smiley_data(n):
     count = n
