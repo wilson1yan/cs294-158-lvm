@@ -15,10 +15,10 @@ train_data, train_labels = sample_smiley_data(100000)
 test_data, test_labels = sample_smiley_data(25000)
 device = torch.device('cuda')
 
-enc_dist, dec_dist = Normal(tanh_std_dev=True), Normal(tanh_std_dev=True)
+enc_dist, dec_dist = Normal(), Normal()
 prior = Normal(torch.cat((torch.zeros(1, 2), torch.ones(1, 2)), dim=1).to(device))
 vae = FullyConnectedVAE(2, 2, enc_dist, dec_dist, prior,
-                        enc_hidden_sizes=[512, 512], dec_hidden_sizes=[512, 512],
+                        enc_hidden_sizes=[128, 128], dec_hidden_sizes=[128, 128],
                         beta=1).to(device)
 
 plot_scatter_2d(train_data[:10000], title='Train Data', labels=train_labels[:10000])
@@ -28,7 +28,7 @@ test_loader = data.DataLoader(test_data, batch_size=128, shuffle=False)
 
 train_epochs(vae, train_loader, test_loader, device, dict(epochs=10, lr=1e-3))
 
-samples = vae.sample(10000).numpy()
+samples = vae.sample(1000).numpy()
 plot_scatter_2d(samples, title='Samples')
 
 x = torch.FloatTensor(train_data[:10000]).to(device)

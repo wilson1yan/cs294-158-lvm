@@ -5,11 +5,10 @@ import torch.nn.functional as F
 
 def kl(z, dist1, dist2):
     if isinstance(dist1, Normal) and isinstance(dist2, Normal):
-        params1, params2 = dist1.get_params(), dist2.get_params()
-        mu1, log_stddev1 = params1.chunk(2, dim=1)
-        mu2, log_stddev2 = params2.chunk(2, dim=1)
-        kl = log_stddev2 - log_stddev1 - 0.5
-        kl = kl + (torch.exp(2 * log_stddev1) + (mu1 - mu2) ** 2) * 0.5 * torch.exp(-2 * log_stddev2)
+        mu1, log_var1 = dist1.get_mu_std()
+        mu2, log_var2 = dist2.get_mu_std()
+        kl = 0.5 * log_var2 - 0.5 * log_var1 - 0.5
+        kl = kl + (torch.exp(log_var1) + (mu1 - mu2) ** 2) * 0.5 * torch.exp(-log_var2)
         return kl.view(kl.shape[0], -1).sum(-1)
     else:
         return dist1.log_prob(z) - dist2.log_prob(z)
@@ -39,22 +38,30 @@ class Distribution(object):
 
 
 class Normal(Distribution):
-    def __init__(self, params=None, use_mean=False, tanh_std_dev=False):
+    def __init__(self, params=None, use_mean=False, min_std_dev=None):
         super().__init__(params=params)
         self.use_mean = use_mean
-        self.tanh_std_dev = tanh_std_dev
+        self.min_std_dev = min_std_dev
+
+    def get_mu_std(self):
+        params = self.get_params(None)
+        mu, log_var = params.chunk(2, dim=1)
+        if self.min_std_dev is not None:
+            log_var = torch.log(log_var.exp() + 1 + self.min_std_dev)
+        return mu, log_var
+
 
     def log_prob(self, x, params=None):
         params = self.get_params(params)
-        mu, log_stddev = params.chunk(2, dim=1)
-        if self.tanh_std_dev:
-            log_stddev = torch.tanh(log_stddev)
+        mu, log_var = params.chunk(2, dim=1)
+        if self.min_std_dev is not None:
+            log_var = torch.log(log_var.exp() + 1 + self.min_std_dev)
 
         if self.use_mean:
             return -F.mse_loss(mu, x, reduction='none').view(x.shape[0], -1).sum(-1)
 
         log_prob = 0.5 * np.log(2 * np.pi)
-        log_prob = log_prob + log_stddev + (x - mu) ** 2 * torch.exp(-2 * log_stddev) * 0.5
+        log_prob = log_prob + 0.5 * log_var + (x - mu) ** 2 * torch.exp(-log_var) * 0.5
         log_prob = log_prob.view(log_prob.shape[0], -1).sum(-1)
         return -log_prob
 
@@ -64,9 +71,9 @@ class Normal(Distribution):
 
     def sample(self, params=None):
         params = self.get_params(params)
-        mu, log_stddev = params.chunk(2, dim=1)
+        mu, log_var = params.chunk(2, dim=1)
         eps = torch.randn_like(mu)
-        return mu + eps * log_stddev.exp()
+        return mu + eps * (0.5 * log_var).exp()
 
 class Bernoulli(Distribution):
     def log_prob(self, x, params=None):

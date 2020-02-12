@@ -24,8 +24,8 @@ class MLP(nn.Module):
         prev_h = np.prod(input_shape)
         for h in hiddens + [np.prod(output_shape)]:
             model.append(nn.Linear(prev_h, h))
-            model.append(nn.LeakyReLU(0.2))
-            model.append(nn.Dropout(0.1))
+            model.append(nn.ReLU())
+            # model.append(nn.Dropout(0.1))
             prev_h = h
         model.pop()
         self.net = nn.Sequential(*model)
@@ -616,7 +616,7 @@ class Quantize(nn.Module):
         encoding_indices = torch.max(-distances, dim=1)[1]
         encode_onehot = F.one_hot(encoding_indices, self.size).type(flat_inputs.dtype)
         encoding_indices = encoding_indices.view(b, h, w)
-        quantized = self.embedding(encoding_indices).permute(0, 3, 1, 2)
+        quantized = self.embedding(encoding_indices).permute(0, 3, 1, 2).contiguous()
 
         if self.training:
             self.N.data.mul_(self.gamma).add_(1 - self.gamma, encode_onehot.sum(0))
@@ -662,7 +662,7 @@ class VectorQuantizedVAE(nn.Module):
         return indices
 
     def decode_code(self, latents):
-        latents = self.codebook.embedding(latents).permute(0, 3, 1, 2)
+        latents = self.codebook.embedding(latents).permute(0, 3, 1, 2).contiguous()
         return self.decoder(latents)
 
     def forward(self, x):
