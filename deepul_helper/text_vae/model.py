@@ -160,11 +160,11 @@ class SentenceVAE(nn.Module):
 
             # update gloabl running sequence
             sequence_mask[sequence_running] = (input_sequence != self.eos_idx).data.byte()
-            sequence_running = sequence_idx.masked_select(sequence_mask)
+            sequence_running = sequence_idx.masked_select(sequence_idx)
 
             # update local running sequences
             running_mask = (input_sequence != self.eos_idx).data
-            running_seqs = running_seqs.masked_select(running_mask)
+            running_seqs = running_seqs.masked_select(running_mask.bool())
 
             # prune input and hidden state according to local update
             if len(running_seqs) > 0:
