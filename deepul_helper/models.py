@@ -326,7 +326,8 @@ class FullyConnectedIAFVAE(nn.Module):
 
 # PixelVAE
 class PixelVAE(nn.Module):
-    def __init__(self, device, input_shape, latent_size, enc_dist, prior, enc_conv_sizes=[(3, 64, 2)], beta=1):
+    def __init__(self, device, input_shape, latent_size, enc_dist, prior,
+                 enc_conv_sizes=[(3, 64, 2)] * 2, beta=1):
         super().__init__()
         assert len(input_shape) == 3
 
@@ -340,10 +341,11 @@ class PixelVAE(nn.Module):
 
         self.encoder = ConvEncoder(input_shape, get_dist_output_size(enc_dist, latent_size),
                                    enc_conv_sizes)
-        self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size)
+        self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size,
+                                n_layers=5, kernel_size=7)
 
     def encode(self, x, sample=True):
-        out = self.encoder(x)
+        out = self.encoder(2 * x - 1)
         if sample:
             z = self.enc_dist.sample(out)
         else:
@@ -354,8 +356,9 @@ class PixelVAE(nn.Module):
         return self.decoder.sample(z.shape[0], cond=z).to(self.device)
 
     def loss(self, x):
-        enc_params = self.encoder(x)
+        enc_params = self.encoder(2 * x - 1)
         z = self.enc_dist.sample(enc_params)
+        self.enc_dist.set_params(enc_params)
 
         recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
         kl_loss = kl(z, self.enc_dist, self.prior).mean()
@@ -369,6 +372,126 @@ class PixelVAE(nn.Module):
             return self.decoder.sample(n, cond=z)
 
 # AF-VAE
+class AFPixelVAE(nn.Module):
+    def __init__(self, device, input_shape, latent_size, enc_dist,
+                 enc_conv_sizes=[(3, 64, 2)] * 2, made_hidden_sizes=[512, 512], beta=1):
+        super().__init__()
+        assert len(input_shape) == 3
+
+        self.input_shape = input_shape
+        self.latent_size = latent_size
+        self.beta = beta
+        self.device = device
+        self.enc_dist = enc_dist
+
+        self.made = MADE(latent_size, 2, hidden_size=made_hidden_sizes)
+        self.encoder = ConvEncoder(input_shape, get_dist_output_size(enc_dist, latent_size),
+                                   enc_conv_sizes)
+        self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size,
+                                n_layers=5, kernel_size=7)
+
+    def encode(self, x, sample=True):
+        out = self.encoder(2 * x - 1)
+        if sample:
+            z = self.enc_dist.sample(out)
+        else:
+            z = self.enc_dist.expectation(out)
+        return z
+
+    def decode(self, z):
+        return self.decoder.sample(z.shape[0], cond=z).to(self.device)
+
+    def loss(self, x):
+        enc_params = self.encoder(2 * x - 1)
+        z = self.enc_dist.sample(enc_params)
+        self.enc_dist.set_params(enc_params)
+
+        recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
+        enc_log_prob = self.enc_dist.log_prob(z)
+
+        out = self.made(z)
+        mu, log_std = out.chunk(2, dim=-1)
+        log_std = torch.tanh(log_std)
+        mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
+        eps = (z - mu) * torch.exp(-log_std)
+        prior_log_prob = -0.5 * np.log(2 * np.pi) - log_std - 0.5 * eps ** 2
+        prior_log_prob = prior_log_prob.sum(dim=1)
+
+        kl_loss = (enc_log_prob - prior_log_prob).mean()
+
+        return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
+                           kl_loss=kl_loss)
+
+    def sample(self, n):
+        with torch.no_grad():
+            z = torch.randn(n, self.latent_size).to(self.device)
+            for i in range(self.latent_size):
+                mu, log_std = self.made(z)[:, i].chunk(2, dim=-1)
+                log_std = torch.tanh(log_std)
+                mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
+                z[:, i] = z[:, i] * log_std.exp() + mu
+            return self.decoder.sample(n, cond=z)
+
+# IAF-PixelVAE
+class IAFPixelVAE(nn.Module):
+    def __init__(self, device, input_shape, latent_size, prior,
+                 enc_conv_sizes=[(3, 64, 2)] * 2, made_hidden_sizes=[512, 512],
+                 embedding_size=128, beta=1):
+        super().__init__()
+        assert len(input_shape) == 3
+
+        self.input_shape = input_shape
+        self.latent_size = latent_size
+        self.beta = beta
+        self.device = device
+        self.prior = prior
+        self.embedding_size = embedding_size
+
+        self.made = MADE(latent_size, 2 * latent_size, hidden_size=made_hidden_sizes,
+                         conditional_size=embedding_size)
+        self.base_encoder = ConvEncoder(input_shape, (embedding_size + 2 * latent_size,),
+                                        enc_conv_sizes)
+        self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size,
+                                n_layers=5, kernel_size=7)
+
+    def encode(self, x, sample=True, include_log_prob=False):
+        eps = torch.randn(x.shape[0], self.latent_size).to(self.device)
+        out = self.base_encoder(2 * x - 1)
+        h = out[:, :self.embedding_size]
+        base_mu, base_log_std = out[:, self.embedding_size:].chunk(2, dim=1)
+        base_log_std = torch.tanh(base_log_std)
+
+        log_prob = 0.5 * np.log(2 * np.pi) + base_log_std + 0.5 * eps ** 2
+        z = base_mu + eps * base_log_std.exp()
+        for i in range(self.latent_size):
+            out = self.made(z, cond=h)[:, i]
+            mu, s = out.chunk(2, dim=1)
+            s = F.logsigmoid(s)
+            z = s.exp() * z + (1 - s.exp()) * mu
+            log_prob = log_prob + s
+        log_prob = -log_prob
+
+        if include_log_prob:
+            return z, log_prob
+        else:
+            return z
+
+    def decode(self, z):
+        return self.decoder.sample(z.shape[0], cond=z).to(self.device)
+
+    def loss(self, x):
+        z, enc_log_prob = self.encode(x, include_log_prob=True, sample=True)
+        recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
+        prior_log_prob = -0.5 * np.log(2 * np.pi) - 0.5 * z ** 2
+        kl_loss = (enc_log_prob - prior_log_prob).mean()
+
+        return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
+                           kl_loss=kl_loss)
+
+    def sample(self, n):
+        with torch.no_grad():
+            z = torch.randn(n, self.latent_size).to(self.device)
+            return self.decoder.sample(n, cond=z)
 
 # IWAE
 
@@ -391,7 +514,7 @@ class MaskConv2d(nn.Conv2d):
     def forward(self, input, cond=None):
         out = F.conv2d(input, self.weight * self.mask, self.bias, self.stride,
                        self.padding, self.dilation, self.groups)
-        if cond:
+        if cond is not None:
             if len(self.conditional_size) == 1:
                 out = out + self.cond_op(cond).unsqueeze(-1).unsqueeze(-1)
             else:
@@ -411,13 +534,18 @@ class PixelCNN(nn.Module):
                  conditional_size=None):
         super().__init__()
         assert n_layers >= 2
+        if isinstance(conditional_size, int):
+            conditional_size = (conditional_size,)
 
         model = nn.ModuleList([MaskConv2d('A', input_shape[0], 64, kernel_size,
-                                          padding=kernel_size // 2), nn.ReLU()])
+                                          padding=kernel_size // 2,
+                                          conditional_size=conditional_size), nn.ReLU()])
         for _ in range(n_layers - 2):
             model.extend([MaskConv2d('B', 64, 64, kernel_size,
-                                     padding=kernel_size // 2), nn.ReLU()])
-        model.append(MaskConv2d('B', 64, input_shape[0] * d, kernel_size, padding=kernel_size // 2))
+                                     padding=kernel_size // 2,
+                                     conditional_size=conditional_size), nn.ReLU()])
+        model.append(MaskConv2d('B', 64, input_shape[0] * d, kernel_size, padding=kernel_size // 2,
+                                conditional_size=conditional_size))
         self.net = model
         self.d = d
         self.device = device
