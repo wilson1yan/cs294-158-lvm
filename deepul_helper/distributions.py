@@ -39,14 +39,16 @@ class Distribution(object):
 
 
 class Normal(Distribution):
-    def __init__(self, params=None, use_mean=False):
+    def __init__(self, params=None, use_mean=False, tanh_std_dev=False):
         super().__init__(params=params)
         self.use_mean = use_mean
+        self.tanh_std_dev = tanh_std_dev
 
     def log_prob(self, x, params=None):
         params = self.get_params(params)
         mu, log_stddev = params.chunk(2, dim=1)
-        log_stddev = torch.tanh(log_stddev)
+        if self.tanh_std_dev:
+            log_stddev = torch.tanh(log_stddev)
 
         if self.use_mean:
             return -F.mse_loss(mu, x, reduction='none').view(x.shape[0], -1).sum(-1)
