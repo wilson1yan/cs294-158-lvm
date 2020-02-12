@@ -323,206 +323,50 @@ class FullyConnectedIAFVAE(nn.Module):
         return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
                            kl_loss=kl_loss)
 
-# Sentence VAE - code from https://github.com/timbmg/Sentence-VAE
-import torch
-import torch.nn as nn
-import torch.nn.utils.rnn as rnn_utils
 
-class SentenceVAE(nn.Module):
-
-    def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, embedding_dropout, latent_size,
-                sos_idx, eos_idx, pad_idx, unk_idx, max_sequence_length, num_layers=1, bidirectional=False):
-
+# PixelVAE
+class PixelVAE(nn.Module):
+    def __init__(self, device, input_shape, latent_size, enc_dist, prior, enc_conv_sizes=[(3, 64, 2)], beta=1):
         super().__init__()
-        self.max_sequence_length = max_sequence_length
-        self.sos_idx = sos_idx
-        self.eos_idx = eos_idx
-        self.pad_idx = pad_idx
-        self.unk_idx = unk_idx
+        assert len(input_shape) == 3
 
+        self.input_shape = input_shape
         self.latent_size = latent_size
+        self.beta = beta
+        self.device = device
 
-        self.rnn_type = rnn_type
-        self.bidirectional = bidirectional
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
+        self.enc_dist = enc_dist
+        self.prior = prior
 
-        self.embedding = nn.Embedding(vocab_size, embedding_size)
-        self.word_dropout_rate = word_dropout
-        self.embedding_dropout = nn.Dropout(p=embedding_dropout)
+        self.encoder = ConvEncoder(input_shape, get_dist_output_size(enc_dist, latent_size),
+                                   enc_conv_sizes)
+        self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size)
 
-        if rnn_type == 'rnn':
-            rnn = nn.RNN
-        elif rnn_type == 'gru':
-            rnn = nn.GRU
+    def encode(self, x, sample=True):
+        out = self.encoder(x)
+        if sample:
+            z = self.enc_dist.sample(out)
         else:
-            raise ValueError()
+            z = self.enc_dist.expectation(out)
+        return z
 
-        self.encoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers, bidirectional=self.bidirectional, batch_first=True)
-        self.decoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers, bidirectional=self.bidirectional, batch_first=True)
+    def decode(self, z):
+        return self.decoder.sample(z.shape[0], cond=z).to(self.device)
 
-        self.hidden_factor = (2 if bidirectional else 1) * num_layers
+    def loss(self, x):
+        enc_params = self.encoder(x)
+        z = self.enc_dist.sample(enc_params)
 
-        self.hidden2mean = nn.Linear(hidden_size * self.hidden_factor, latent_size)
-        self.hidden2logv = nn.Linear(hidden_size * self.hidden_factor, latent_size)
-        self.latent2hidden = nn.Linear(latent_size, hidden_size * self.hidden_factor)
-        self.outputs2vocab = nn.Linear(hidden_size * (2 if bidirectional else 1), vocab_size)
+        recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
+        kl_loss = kl(z, self.enc_dist, self.prior).mean()
 
-    def forward(self, batch):
-        input_sequence, length = batch['input'], batch['length']
+        return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
+                           kl_loss=kl_loss)
 
-        batch_size = input_sequence.size(0)
-        sorted_lengths, sorted_idx = torch.sort(length, descending=True)
-        input_sequence = input_sequence[sorted_idx]
-
-        # ENCODER
-        input_embedding = self.embedding(input_sequence)
-
-        packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-
-        _, hidden = self.encoder_rnn(packed_input)
-
-        if self.bidirectional or self.num_layers > 1:
-            # flatten hidden state
-            hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
-        else:
-            hidden = hidden.squeeze()
-
-        # REPARAMETERIZATION
-        mean = self.hidden2mean(hidden)
-        logv = self.hidden2logv(hidden)
-        std = torch.exp(0.5 * logv)
-
-        z = torch.randn([batch_size, self.latent_size])
-        z = z * std + mean
-
-        # DECODER
-        hidden = self.latent2hidden(z)
-
-        if self.bidirectional or self.num_layers > 1:
-            # unflatten hidden state
-            hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_size)
-        else:
-            hidden = hidden.unsqueeze(0)
-
-        # decoder input
-        if self.word_dropout_rate > 0:
-            # randomly replace decoder input with <unk>
-            prob = torch.rand(input_sequence.size())
-            if torch.cuda.is_available():
-                prob=prob.cuda()
-            prob[(input_sequence.data - self.sos_idx) * (input_sequence.data - self.pad_idx) == 0] = 1
-            decoder_input_sequence = input_sequence.clone()
-            decoder_input_sequence[prob < self.word_dropout_rate] = self.unk_idx
-            input_embedding = self.embedding(decoder_input_sequence)
-        input_embedding = self.embedding_dropout(input_embedding)
-        packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-
-        # decoder forward pass
-        outputs, _ = self.decoder_rnn(packed_input, hidden)
-
-        # process outputs
-        padded_outputs = rnn_utils.pad_packed_sequence(outputs, batch_first=True)[0]
-        padded_outputs = padded_outputs.contiguous()
-        _,reversed_idx = torch.sort(sorted_idx)
-        padded_outputs = padded_outputs[reversed_idx]
-        b,s,_ = padded_outputs.size()
-
-        # project outputs to vocab
-        logp = nn.functional.log_softmax(self.outputs2vocab(padded_outputs.view(-1, padded_outputs.size(2))), dim=-1)
-        logp = logp.view(b, s, self.embedding.num_embeddings)
-
-
-        return logp, mean, logv, z
-
-
-    def loss(self, batch):
-        target = batch['target']
-
-        # cut-off unnecessary padding from target, and flatten
-        target = target[:, :torch.max(length).data[0]].contiguous().view(-1)
-        logp = logp.view(-1, logp.size(2))
-
-        # Negative Log Likelihood
-        NLL_loss = NLL(logp, target)
-
-        # KL Divergence
-        KL_loss = -0.5 * torch.sum(1 + logv - mean.pow(2) - logv.exp())
-        KL_weight = kl_anneal_function(anneal_function, step, k, x0)
-
-        return NLL_loss, KL_loss, KL_weight
-
-
-    def inference(self, n=4, z=None):
-
-        if z is None:
-            batch_size = n
-            z = torch.randn([batch_size, self.latent_size])
-        else:
-            batch_size = z.size(0)
-
-        hidden = self.latent2hidden(z)
-
-        if self.bidirectional or self.num_layers > 1:
-            # unflatten hidden state
-            hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_size)
-
-        hidden = hidden.unsqueeze(0)
-
-        # required for dynamic stopping of sentence generation
-        sequence_idx = torch.arange(0, batch_size).long() # all idx of batch
-        sequence_running = torch.arange(0, batch_size).long() # all idx of batch which are still generating
-        sequence_mask = torch.ones(batch_size).byte()
-
-        running_seqs = torch.arange(0, batch_size).long().cuda() # idx of still generating sequences with respect to current loop
-
-        generations = torch.zeros(batch_size, self.max_sequence_length).long().cuda()
-
-        t=0
-        while(t<self.max_sequence_length and len(running_seqs)>0):
-
-            if t == 0:
-                input_sequence = torch.Tensor(batch_size).fill_(self.sos_idx).long()
-
-            input_sequence = input_sequence.unsqueeze(1)
-
-            input_embedding = self.embedding(input_sequence)
-
-            output, hidden = self.decoder_rnn(input_embedding, hidden)
-
-            logits = self.outputs2vocab(output)
-
-            input_sequence = self._sample(logits)
-
-            # save next input
-            generations = self._save_sample(generations, input_sequence, sequence_running, t)
-
-            # update gloabl running sequence
-            sequence_mask[sequence_running] = (input_sequence != self.eos_idx).data
-            sequence_running = sequence_idx.masked_select(sequence_mask)
-
-            # update local running sequences
-            running_mask = (input_sequence != self.eos_idx).data
-            running_seqs = running_seqs.masked_select(running_mask)
-
-            # prune input and hidden state according to local update
-            if len(running_seqs) > 0:
-                input_sequence = input_sequence[running_seqs]
-                hidden = hidden[:, running_seqs]
-
-                running_seqs = torch.arange(0, len(running_seqs)).long().cuda()
-
-            t += 1
-
-        return generations, z
-
-    def _sample(self, dist, mode='greedy'):
-
-        if mode == 'greedy':
-            _, sample = torch.topk(dist, 1, dim=-1)
-        sample = sample.squeeze()
-
-        return sample
+    def sample(self, n):
+        with torch.no_grad():
+            z = torch.cat([self.prior.sample() for _ in range(n)], dim=0)
+            return self.decoder.sample(n, cond=z)
 
 # AF-VAE
 
@@ -531,15 +375,27 @@ class SentenceVAE(nn.Module):
 
 # PixelCNN
 class MaskConv2d(nn.Conv2d):
-    def __init__(self, mask_type, *args, **kwargs):
+    def __init__(self, mask_type, *args, conditional_size=None, **kwargs):
         assert mask_type == 'A' or mask_type == 'B'
         super().__init__(*args, **kwargs)
         self.register_buffer('mask', torch.zeros_like(self.weight))
         self.create_mask(mask_type)
 
+        self.conditional_size = conditional_size
+        if conditional_size:
+            if len(conditional_size) == 1:
+                self.cond_op = nn.Linear(conditional_size[0], self.out_channels)
+            else:
+                self.cond_op = nn.Conv2d(conditional_size[0], self.out_channels, 3, padding=1)
+
     def forward(self, input, cond=None):
         out = F.conv2d(input, self.weight * self.mask, self.bias, self.stride,
                        self.padding, self.dilation, self.groups)
+        if cond:
+            if len(self.conditional_size) == 1:
+                out = out + self.cond_op(cond).unsqueeze(-1).unsqueeze(-1)
+            else:
+                out = out + self.cond_op(cond)
         return out
 
     def create_mask(self, mask_type):
@@ -551,7 +407,8 @@ class MaskConv2d(nn.Conv2d):
 
 
 class PixelCNN(nn.Module):
-    def __init__(self, device, d, input_shape=(1, 7, 7), kernel_size=5, n_layers=7):
+    def __init__(self, device, d, input_shape=(1, 7, 7), kernel_size=5, n_layers=7,
+                 conditional_size=None):
         super().__init__()
         assert n_layers >= 2
 
@@ -566,25 +423,34 @@ class PixelCNN(nn.Module):
         self.device = device
         self.input_shape = input_shape
 
-    def forward(self, x):
+        if conditional_size:
+            if len(conditional_size) == 1:
+                self.cond_op = lambda x: x
+            else:
+                pass
+
+    def forward(self, x, cond=None):
         out = 2 * (x.float() / (self.d - 1)) - 1
         for layer in self.net:
-            out = layer(out)
+            if isinstance(layer, MaskConv2d):
+                out = layer(out, cond=cond)
+            else:
+                out = layer(out)
         return out.view(x.shape[0], self.d, *self.input_shape)
 
-    def loss(self, x):
-        return OrderedDict(loss=F.cross_entropy(self(x), x.long()))
+    def loss(self, x, cond=None):
+        return OrderedDict(loss=F.cross_entropy(self(x, cond=cond), x.long()))
 
-    def sample(self, n):
+    def sample(self, n, cond=None):
         samples = torch.zeros(n, *self.input_shape).to(self.device)
         with torch.no_grad():
             for r in range(self.input_shape[1]):
                 for c in range(self.input_shape[2]):
                     for k in range(self.input_shape[0]):
-                        logits = self(samples)[:, :, k, r, c]
+                        logits = self(samples, cond=cond)[:, :, k, r, c]
                         logits = F.softmax(logits, dim=1)
                         samples[:, k, r, c] = torch.multinomial(logits, 1).squeeze(-1)
-        return samples
+        return samples.cpu()
 
 
 # VQ-VAE
@@ -677,4 +543,102 @@ class VectorQuantizedVAE(nn.Module):
         loss = recon_loss + self.beta * diff_loss
         return OrderedDict(loss=loss, recon_loss=recon_loss, diff_loss=diff_loss)
 
-# Gumbel-Softmax VAE
+# Gumbel-Softmax VAE: https://github.com/YongfeiYan/Gumbel_Softmax_VAE/
+def sample_gumbel(shape, eps=1e-20):
+    U = torch.clamp(torch.rand(shape), min=1e-5, max=1 - 1e-5).cuda()
+    return -torch.log(-torch.log(U + eps) + eps)
+
+
+def gumbel_softmax_sample(logits, temperature):
+    y = logits + sample_gumbel(logits.size())
+    return F.softmax(y / temperature, dim=-1)
+
+
+def gumbel_softmax(logits, temperature, latent_dim, categorical_dim, hard=False):
+    """
+    ST-gumple-softmax
+    input: [*, n_class]
+    return: flatten --> [*, n_class] an one-hot vector
+    """
+    y = gumbel_softmax_sample(logits, temperature)
+
+    if not hard:
+        return y.view(-1, latent_dim * categorical_dim)
+
+    shape = y.size()
+    _, ind = y.max(dim=-1)
+    y_hard = torch.zeros_like(y).view(-1, shape[-1])
+    y_hard.scatter_(1, ind.view(-1, 1), 1)
+    y_hard = y_hard.view(*shape)
+    # Set gradients w.r.t. y_hard gradients w.r.t. y
+    y_hard = (y_hard - y).detach() + y
+    return y_hard.view(-1, latent_dim * categorical_dim)
+
+class GumbelVAE(nn.Module):
+    ANNEAL_RATE = 3e-5
+    MIN_TEMP = 0.5
+
+    def __init__(self, latent_dim, categorical_dim, hard=False):
+        super().__init__()
+
+        self.fc1 = nn.Linear(784, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, latent_dim * categorical_dim)
+
+        self.fc4 = nn.Linear(latent_dim * categorical_dim, 256)
+        self.fc5 = nn.Linear(256, 512)
+        self.fc6 = nn.Linear(512, 784)
+
+        self.relu = nn.ReLU()
+
+        self.latent_dim = latent_dim
+        self.categorical_dim = categorical_dim
+        self.hard = hard
+
+        self.temp = 1
+        self.counter = 0
+
+    def encode(self, x):
+        h1 = self.relu(self.fc1(x))
+        h2 = self.relu(self.fc2(h1))
+        return self.relu(self.fc3(h2))
+
+    def decode(self, z):
+        h4 = self.relu(self.fc4(z))
+        h5 = self.relu(self.fc5(h4))
+        return torch.sigmoid(self.fc6(h5))
+
+    def forward(self, x):
+        q = self.encode(x.view(-1, 784))
+        q_y = q.view(q.size(0), self.latent_dim, self.categorical_dim)
+        z = gumbel_softmax(q_y, self.temp, self.latent_dim, self.categorical_dim, self.hard)
+
+        self.temp = max(self.temp * np.exp(-GumbelVAE.ANNEAL_RATE * self.counter), GumbelVAE.MIN_TEMP)
+        self.counter += 1
+        return self.decode(z), F.softmax(q_y, dim=-1).reshape(*q.size())
+
+    def loss(self, x):
+        recon_batch, qy = self(x)
+        recon_loss = F.binary_cross_entropy(recon_batch, x.view(-1, 784), reduction='none').sum(-1).mean()
+        log_ratio = torch.log(qy * self.categorical_dim + 1e-20)
+        kl_loss = torch.sum(qy * log_ratio, dim=-1).mean()
+        return OrderedDict(loss=recon_loss + kl_loss, recon_loss=recon_loss, kl_loss=kl_loss)
+
+    def sample(self, n):
+        with torch.no_grad():
+            z = torch.zeros(n * self.latent_dim, self.categorical_dim).float()
+            idxs = torch.randint(high=self.categorical_dim, size=(n * self.latent_dim,))
+            z.scatter_(1, idxs.unsqueeze(1), 1)
+            z = z.view(n, self.latent_dim * self.categorical_dim).cuda()
+            return self.decode(z).view(n, 1, 28, 28).cpu()
+
+    def train(self):
+        super().train()
+        self.temp = 1.0
+        self.counter = 0
+
+
+    def eval(self):
+        super().train()
+        self.temp = 1.0
+        self.counter = 0
