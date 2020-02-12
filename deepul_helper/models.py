@@ -333,7 +333,7 @@ class FullyConnectedIAFVAE(nn.Module):
 # PixelVAE
 class PixelVAE(nn.Module):
     def __init__(self, device, input_shape, latent_size, enc_dist, prior,
-                 enc_conv_sizes=[(3, 64, 2)] * 2, beta=1):
+                 enc_conv_sizes=[(3, 64, 2)] * 2, beta=1, free_bits=0):
         super().__init__()
         assert len(input_shape) == 3
 
@@ -341,6 +341,7 @@ class PixelVAE(nn.Module):
         self.latent_size = latent_size
         self.beta = beta
         self.device = device
+        self.free_bits = free_bits
 
         self.enc_dist = enc_dist
         self.prior = prior
@@ -367,7 +368,9 @@ class PixelVAE(nn.Module):
         self.enc_dist.set_params(enc_params)
 
         recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
-        kl_loss = kl(z, self.enc_dist, self.prior).mean()
+        kl_loss = kl(z, self.enc_dist, self.prior)
+        kl_loss = torch.clamp(kl_loss, min=self.free_bits)
+        kl_loss = kl_loss.mean()
 
         return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
                            kl_loss=kl_loss)

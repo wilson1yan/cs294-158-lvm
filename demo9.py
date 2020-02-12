@@ -44,6 +44,11 @@ pixel_vae = PixelVAE(device, (1, 28, 28), latent_size, enc_dist, prior,
                      enc_conv_sizes=((3, 64, 2), (3, 64, 2))).to(device)
 run_demo9(pixel_vae)
 
+pixel_vae_free = PixelVAE(device, (1, 28, 28), latent_size, enc_dist, prior,
+                         enc_conv_sizes=((3, 64, 2), (3, 64, 2)),
+                         free_bits=3).to(device)
+run_demo9(pixel_vae_free)
+
 
 af_vae = AFPixelVAE(device, (1, 28, 28), latent_size, enc_dist,
                        enc_conv_sizes=((3, 64, 2), (3, 64, 2)), made_hidden_sizes=[512, 512]).to(device)
