@@ -5,11 +5,9 @@ import torch
 import torch.optim as optim
 
 
-def train(model, train_loader, optimizer, epoch, device, quiet, grad_clip=None):
+def train(model, train_loader, optimizer, epoch, device, grad_clip=None):
     model.train()
 
-    if not quiet:
-        pbar = tqdm(total=len(train_loader.dataset))
     losses = OrderedDict()
     for x in train_loader:
         if isinstance(x, list):
@@ -21,20 +19,6 @@ def train(model, train_loader, optimizer, epoch, device, quiet, grad_clip=None):
         if grad_clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-
-        if not quiet:
-            desc = f'Epoch {epoch}'
-            for k, v in out.items():
-                if k not in losses:
-                    losses[k] = []
-                losses[k] += [v.item()]
-                avg_loss = np.mean(losses[k][-50:])
-                desc += f', {k} {avg_loss:.4f}'
-
-            pbar.set_description(desc)
-            pbar.update(x.shape[0])
-    if not quiet:
-        pbar.close()
 
 
 def eval_loss(model, data_loader, device):
@@ -64,11 +48,10 @@ def train_epochs(model, train_loader, test_loader, device, train_args, fn=None, 
 
     for epoch in range(epochs):
         model.train()
-        train(model, train_loader, optimizer, epoch, device, quiet, grad_clip)
-        if test_loader is not None and not quiet:
-            eval_loss(model, test_loader, device)
+        train(model, train_loader, optimizer, epoch, device, grad_clip)
 
         if fn is not None and epoch % fn_every == 0:
             fn(epoch)  
-    eval_loss(model, test_loader, device)
+    if not quiet:
+        eval_loss(model, test_loader, device)
 
