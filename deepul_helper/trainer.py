@@ -37,7 +37,7 @@ def train(model, train_loader, optimizer, epoch, device, quiet, grad_clip=None):
         pbar.close()
 
 
-def eval_loss(model, data_loader, device, quiet):
+def eval_loss(model, data_loader, device):
     model.eval()
     total_losses = OrderedDict()
     with torch.no_grad():
@@ -49,12 +49,11 @@ def eval_loss(model, data_loader, device, quiet):
             for k, v in out.items():
                 total_losses[k] = total_losses.get(k, 0) + v.item() * x.shape[0]
 
-        if not quiet:
-            desc = 'Test '
-            for k in total_losses.keys():
-                total_losses[k] /= len(data_loader.dataset)
-                desc += f', {k} {total_losses[k]:.4f}'
-            print(desc)
+        desc = 'Test '
+        for k in total_losses.keys():
+            total_losses[k] /= len(data_loader.dataset)
+            desc += f', {k} {total_losses[k]:.4f}'
+        print(desc)
 
 
 def train_epochs(model, train_loader, test_loader, device, train_args, fn=None, fn_every=1,
@@ -67,8 +66,9 @@ def train_epochs(model, train_loader, test_loader, device, train_args, fn=None, 
         model.train()
         train(model, train_loader, optimizer, epoch, device, quiet, grad_clip)
         if test_loader is not None and not quiet:
-            eval_loss(model, test_loader, device, quiet)
+            eval_loss(model, test_loader, device)
 
         if fn is not None and epoch % fn_every == 0:
-            fn(epoch)
+            fn(epoch)  
+    eval_loss(model, test_loader, device)
 

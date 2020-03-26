@@ -25,7 +25,6 @@ class MLP(nn.Module):
         for h in hiddens + [np.prod(output_shape)]:
             model.append(nn.Linear(prev_h, h))
             model.append(nn.ReLU())
-            # model.append(nn.Dropout(0.1))
             prev_h = h
         model.pop()
         self.net = nn.Sequential(*model)
@@ -106,6 +105,7 @@ class FullyConnectedVAE(VAE):
 
 class ConvEncoder(nn.Module):
     def __init__(self, input_shape, output_shape, conv_sizes=[(3, 64, 2)]):
+
         super().__init__()
         assert input_shape[1] == input_shape[2]
 
@@ -250,86 +250,6 @@ class MADE(nn.Module):
     return out
 
 
-class IAFEncoder(nn.Module):
-    def __init__(self, device, input_shape, embedding_size, latent_size,
-                 base_hidden_sizes=[], made_hidden_sizes=[128]):
-        super().__init__()
-        self.input_shape = input_shape
-        self.embedding_size = embedding_size
-        self.latent_size = latent_size
-        self.device = device
-
-        self.base_dist = MLP(input_shape, embedding_size + 2 * latent_size,
-                             base_hidden_sizes)
-        self.made = MADE(latent_size, 2 * latent_size, made_hidden_sizes,
-                         conditional_size=embedding_size)
-
-    def forward(self, x):
-        eps = torch.randn(x.shape[0], self.latent_size)
-        out = self.base_dist(x)
-        h = out[:, :self.embedding_size]
-        base_mu, base_log_stddev = out[:, self.embedding_size:].chunk(2, dim=1)
-        z = eps * base_log_stddev.exp() + base_mu
-        log_prob = 0.5 * np.log(2 * np.pi) + base_log_stddev + 0.5 * eps ** 2
-
-        for i in range(self.latent_size):
-            out = self.made(z, cond=h)[:, i]
-            mu, s = out.chunk(2, dim=1)
-            s = F.logsigmoid(s)
-            z = s.exp() * z + (1 - s.exp()) * mu
-            log_prob = log_prob + s
-        return z, -log_prob.sum(dim=1)
-
-
-# IAF-VAE
-class FullyConnectedIAFVAE(nn.Module):
-    def __init__(self, device, input_shape, embedding_size, latent_size, dec_dist,
-                 base_hidden_sizes=[], made_hidden_sizes=[], dec_hidden_sizes=[], beta=1):
-        super().__init__()
-        if isinstance(input_shape, int):
-            input_shape = (input_shape,)
-        self.input_shape = input_shape
-        self.latent_size = latent_size
-        self.embedding_size = embedding_size
-        self.device = device
-        self.beta = beta
-
-        self.dec_dist = dec_dist
-
-        self.encoder = IAFEncoder(device, input_shape, embedding_size, latent_size,
-                                  base_hidden_sizes, made_hidden_sizes)
-        self.decoder = MLP(latent_size, get_dist_output_size(dec_dist, input_shape),
-                           dec_hidden_sizes)
-
-    def encode(self, x, sample=True): # sample does nothing, just there to keep input consistent
-        z, _ = self.encoder(x)
-        return z
-
-    def decode(self, z, sample=True):
-        out = self.decoder(z)
-        if sample:
-            x = self.dec_dist.sample(out)
-        else:
-            x = self.dec_dist.expectation(out)
-        return x.view(-1, *self.input_shape)
-
-    def forward(self, x):
-        z, z_log_prob = self.encoder(x)
-        dec_params = self.decoder(z)
-        return z, z_log_prob, dec_params
-
-    def loss(self, x):
-        z, z_log_prob, dec_params = self(x)
-        self.dec_dist.set_params(dec_params)
-        recon_loss = -self.dec_dist.log_prob(x)
-        prior_log_prob = -(0.5 * np.log(2 * np.pi) + 0.5 * z ** 2).sum(dim=1)
-        kl_loss = z_log_prob - prior_log_prob
-        recon_loss, kl_loss = recon_loss.mean(), kl_loss.mean()
-
-        return OrderedDict(loss=recon_loss + self.beta * kl_loss, recon_loss=recon_loss,
-                           kl_loss=kl_loss)
-
-
 # PixelVAE
 class PixelVAE(nn.Module):
     def __init__(self, device, input_shape, latent_size, enc_dist, prior,
@@ -383,17 +303,20 @@ class PixelVAE(nn.Module):
 # AF-VAE
 class AFPixelVAE(nn.Module):
     def __init__(self, device, input_shape, latent_size, enc_dist,
-                 enc_conv_sizes=[(3, 64, 2)] * 2, made_hidden_sizes=[512, 512], beta=1):
+                 enc_conv_sizes=[(3, 64, 2)] * 2, made_hidden_sizes=[512, 512], beta=1,
+                 n_mades=1):
         super().__init__()
         assert len(input_shape) == 3
 
         self.input_shape = input_shape
         self.latent_size = latent_size
+        self.n_mades = n_mades
         self.beta = beta
         self.device = device
         self.enc_dist = enc_dist
 
-        self.made = MADE(latent_size, 2, hidden_size=made_hidden_sizes)
+        self.mades = nn.ModuleList([MADE(latent_size, 2, hidden_size=made_hidden_sizes)
+                                    for _ in range(n_mades)])
         self.encoder = ConvEncoder(input_shape, get_dist_output_size(enc_dist, latent_size),
                                    enc_conv_sizes)
         self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size,
@@ -418,12 +341,16 @@ class AFPixelVAE(nn.Module):
         recon_loss = self.decoder.loss(x, cond=z)['loss'] * np.prod(self.input_shape)
         enc_log_prob = self.enc_dist.log_prob(z)
 
-        out = self.made(z)
-        mu, log_std = out.chunk(2, dim=-1)
-        log_std = torch.tanh(log_std)
-        mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
-        eps = (z - mu) * torch.exp(-log_std)
-        prior_log_prob = -0.5 * np.log(2 * np.pi) - log_std - 0.5 * eps ** 2
+        eps = z
+        prior_log_prob = 0
+        for i in range(self.n_mades):
+            out = self.mades[i](eps)
+            mu, log_std = out.chunk(2, dim=-1)
+            log_std = torch.tanh(log_std)
+            mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
+            eps = eps * torch.exp(log_std) + mu
+            prior_log_prob = prior_log_prob + log_std
+        prior_log_prob = -0.5 * np.log(2 * np.pi) - 0.5 * eps ** 2
         prior_log_prob = prior_log_prob.sum(dim=1)
 
         kl_loss = (enc_log_prob - prior_log_prob).mean()
@@ -434,30 +361,33 @@ class AFPixelVAE(nn.Module):
     def sample(self, n):
         with torch.no_grad():
             z = torch.randn(n, self.latent_size).to(self.device)
-            for i in range(self.latent_size):
-                mu, log_std = self.made(z)[:, i].chunk(2, dim=-1)
-                log_std = torch.tanh(log_std)
-                mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
-                z[:, i] = z[:, i] * log_std.exp() + mu
+            for i in range(self.n_mades):
+                for j in range(self.latent_size):
+                    mu, log_std = self.mades[self.n_mades - i - 1](z)[:, j].chunk(2, dim=-1)
+                    log_std = torch.tanh(log_std)
+                    mu, log_std = mu.squeeze(-1), log_std.squeeze(-1)
+                    z[:, j] = (z[:, j] - mu) * torch.exp(-log_std) + mu
             return self.decoder.sample(n, cond=z)
 
 # IAF-PixelVAE
 class IAFPixelVAE(nn.Module):
     def __init__(self, device, input_shape, latent_size, prior,
                  enc_conv_sizes=[(3, 64, 2)] * 2, made_hidden_sizes=[512, 512],
-                 embedding_size=128, beta=1):
+                 embedding_size=128, beta=1, n_mades=1):
         super().__init__()
         assert len(input_shape) == 3
 
         self.input_shape = input_shape
         self.latent_size = latent_size
+        self.n_mades = n_mades
         self.beta = beta
         self.device = device
         self.prior = prior
         self.embedding_size = embedding_size
 
-        self.made = MADE(latent_size, 2 * latent_size, hidden_size=made_hidden_sizes,
-                         conditional_size=embedding_size)
+        self.mades = nn.ModuleList([MADE(latent_size, 2, hidden_size=made_hidden_sizes,
+                                         conditional_size=embedding_size)
+                                    for _ in range(n_mades)])
         self.base_encoder = ConvEncoder(input_shape, (embedding_size + 2 * latent_size,),
                                         enc_conv_sizes)
         self.decoder = PixelCNN(device, 2, input_shape=input_shape, conditional_size=latent_size,
@@ -472,9 +402,10 @@ class IAFPixelVAE(nn.Module):
 
         log_prob = 0.5 * np.log(2 * np.pi) + base_log_std + 0.5 * eps ** 2
         z = base_mu + eps * base_log_std.exp()
-        for i in range(self.latent_size):
-            out = self.made(z, cond=h)[:, i]
-            mu, s = out.chunk(2, dim=1)
+        for i in range(self.n_mades):
+            out = self.mades[i](z, cond=h)
+            mu, s = out.chunk(2, dim=-1)
+            mu, s = mu.squeeze(-1), s.squeeze(-1)
             s = F.logsigmoid(s)
             z = s.exp() * z + (1 - s.exp()) * mu
             log_prob = log_prob + s
