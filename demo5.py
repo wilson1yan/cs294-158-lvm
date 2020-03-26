@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d
 import torch
 import torch.utils.data as data
 
@@ -9,18 +11,29 @@ from deepul_helper.visualize import plot_scatter_2d
 from deepul_helper.data import sample_diag_guass_data, sample_cov_gauss_data
 
 # # Autoencoding a Single bit
-# def train_bern_vae(train_data):
-#     device = torch.device('cpu')
-#     enc_dist, dec_dist = Normal(), Bernoulli()
-#     prior = Normal(torch.FloatTensor([[0, 1]]))
-#     vae = FullyConnectedVAE(train_data.shape[1], 1, enc_dist, dec_dist, prior,
-#                             enc_hidden_sizes=[32], dec_hidden_sizes=[32],
-#                             beta=1)
-#     data_loader = data.DataLoader(train_data, batch_size=1, shuffle=True)
-#     train_epochs(vae, data_loader, None, device, dict(epochs=1000, lr=2e-4))
-#
-# train_bern_vae(np.array([[0.], [1.]], dtype='float32'))
-# train_bern_vae(np.array([[0., 0., 0., 0., 0.], [1., 1., 1., 1., 1.]], dtype='float32'))
+def train_bern_vae(train_data):
+    device = torch.device('cpu')
+    enc_dist, dec_dist = Normal(), Bernoulli()
+    prior = Normal(torch.FloatTensor([[0, 1]]))
+    vae = FullyConnectedVAE(train_data.shape[1], 1, enc_dist, dec_dist, prior,
+                            enc_hidden_sizes=[32], dec_hidden_sizes=[32],
+                            beta=1)
+    data_loader = data.DataLoader(train_data, batch_size=1, shuffle=True)
+    losses = train_epochs(vae, data_loader, None, device, dict(epochs=1000, lr=2e-4))
+    for k, v in losses.items():
+        losses[k] = gaussian_filter1d(np.array(v, dtype='float32'), 5)
+
+    plt.figure()
+    plt.title('Train Losses')
+    plt.xlabel('Iteration')
+    plt.plot(losses['loss'], label='-ELBO')
+    plt.plot(losses['recon_loss'], label='Recon Loss')
+    plt.plot(losses['kl_loss'], label='KL Loss')
+    plt.legend()
+    plt.show()
+
+train_bern_vae(np.array([[0.], [1.]], dtype='float32'))
+train_bern_vae(np.array([[0., 0., 0., 0., 0.], [1., 1., 1., 1., 1.]], dtype='float32'))
 
 # Posterior Collapse on Gaussian data
 
@@ -40,7 +53,19 @@ def train_gauss_vae(data_fn):
     train_loader = data.DataLoader(train_data, batch_size=128, shuffle=True)
     test_loader = data.DataLoader(test_data, batch_size=128, shuffle=False)
 
-    train_epochs(vae, train_loader, test_loader, device, dict(epochs=20, lr=1e-3))
+    losses = train_epochs(vae, train_loader, test_loader, device, dict(epochs=20, lr=1e-3))
+
+    for k, v in losses.items():
+        losses[k] = gaussian_filter1d(np.array(v, dtype='float32'), 5)
+
+    plt.figure()
+    plt.title('Train Losses')
+    plt.xlabel('Iteration')
+    plt.plot(losses['loss'], label='-ELBO')
+    plt.plot(losses['recon_loss'], label='Recon Loss')
+    plt.plot(losses['kl_loss'], label='KL Loss')
+    plt.legend()
+    plt.show()
 
     samples = vae.sample(1000, decoder_noise=True).numpy()
     plot_scatter_2d(samples, title='Samples (with decoder noise)')
