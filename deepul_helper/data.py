@@ -1,6 +1,15 @@
 import numpy as np
 from sklearn.datasets import make_blobs
 
+
+def sample_three_blobs(n):
+    centers = np.array([[5, 5], [-5, 5], [0, -5]])
+    st_devs = np.array([[1.0, 1.0], [0.2, 0.2], [3.0, 0.5]])
+    labels = np.random.randint(0, 3, size=(n,), dtype='int32')
+    x = np.random.randn(n, 2) * st_devs[labels] + centers[labels]
+    return x.astype('float32')
+
+
 def sample_four_blobs(n):
     centers = np.array([[5, 5], [5, -5], [-5, -5], [-5, 5]])
     st_devs = [1.0, 1.0, 1.0, 1.0]
